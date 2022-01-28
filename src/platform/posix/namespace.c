@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018, Björn Ståhl
+ * Copyright: Björn Ståhl
  * License: 3-Clause BSD, see COPYING file in arcan source repository.
  * Reference: http://arcan-fe.com
  */
@@ -17,9 +17,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <arcan_math.h>
 #include <arcan_general.h>
+#include <arcan_db.h>
 
 static struct {
 	union {
@@ -73,6 +75,7 @@ char* arcan_find_resource(const char* label,
 	if (label == NULL || verify_traverse(label) == NULL)
 		return NULL;
 
+	space &= ~RESOURCE_NS_USER;
 	size_t label_len = strlen(label);
 
 	for (int i = 1, j = 0; i <= RESOURCE_SYS_ENDM; i <<= 1, j++){
@@ -97,6 +100,7 @@ char* arcan_find_resource(const char* label,
 
 char* arcan_fetch_namespace(enum arcan_namespaces space)
 {
+	space &= ~RESOURCE_NS_USER;
 	int space_ind = i_log2(space);
 	assert(space > 0 && (space & (space - 1) ) == 0);
 	if (space_ind > sizeof(namespaces.paths)/sizeof(namespaces.paths[0]))
@@ -107,6 +111,8 @@ char* arcan_fetch_namespace(enum arcan_namespaces space)
 char* arcan_expand_resource(const char* label, enum arcan_namespaces space)
 {
 	assert( space > 0 && (space & (space - 1) ) == 0 );
+	space &= ~RESOURCE_NS_USER;
+
 	int space_ind =i_log2(space);
 	if (space_ind > sizeof(namespaces.paths)/sizeof(namespaces.paths[0]) ||
 		label == NULL || verify_traverse(label) == NULL ||
@@ -127,34 +133,6 @@ char* arcan_expand_resource(const char* label, enum arcan_namespaces space)
 	memcpy(&cbuf[len_2 + (label[0] == '/' ? 0 : 1)], label, len_1+1);
 
 	return strdup(cbuf);
-}
-
-char* arcan_find_resource_path(const char* label, const char* path,
-	enum arcan_namespaces space)
-{
-	if (label == NULL || path == NULL ||
-		verify_traverse(path) == NULL || verify_traverse(label) == NULL)
-			return NULL;
-
-/* combine the two strings, add / delimiter if necessary and forward */
-	size_t len_1 = strlen(path);
-	size_t len_2 = strlen(label);
-
-	if (len_1 == 0)
-		return arcan_find_resource(label, space, ARES_FILE);
-
-	if (len_2 == 0)
-		return NULL;
-
-/* append, re-use strlens and null terminate */
-	char buf[ len_1 + len_2 + 2 ];
-	memcpy(buf, path, len_1);
-	buf[len_1] = '/';
-	memcpy(&buf[len_1+1], label, len_2 + 1);
-
-/* simply forward */
-	char* res = arcan_find_resource(buf, space, ARES_FILE);
-	return res;
 }
 
 static char* atypestr = NULL;
@@ -253,6 +231,7 @@ void arcan_softoverride_namespace(const char* new, enum arcan_namespaces space)
 
 void arcan_pin_namespace(enum arcan_namespaces space)
 {
+	space &= ~RESOURCE_NS_USER;
 	int ind = i_log2(space);
 	namespaces.flags[ind] = 1;
 }
@@ -262,6 +241,7 @@ void arcan_override_namespace(const char* path, enum arcan_namespaces space)
 	if (path == NULL)
 		return;
 
+	space &= ~RESOURCE_NS_USER;
 	assert( space > 0 && (space & (space - 1) ) == 0 );
 	int space_ind =i_log2(space);
 
@@ -274,5 +254,81 @@ void arcan_override_namespace(const char* path, enum arcan_namespaces space)
 
 	namespaces.paths[space_ind] = strdup(path);
 	namespaces.lenv[space_ind] = strlen(namespaces.paths[space_ind]);
+}
+
+/* take a properly formatted namespace string (label:perm:path)
+ * and split up into the arcan_userns structure */
+static bool decompose(char* ns, struct arcan_userns* dst)
+{
+	char* tmp = ns;
+	size_t pos = 0;
+	while (tmp){
+		char* cur = strsep(&tmp, ":");
+		switch(pos){
+			case 0: snprintf(dst->label, 64, "%s", cur); break;
+			case 1:
+				if (strcmp(cur, "r") == 0)
+					dst->perm = O_RDONLY;
+				else if (strcmp(cur, "w") == 0)
+					dst->perm = O_WRONLY;
+				else if (strcmp(cur, "rw") == 0)
+					dst->perm = O_RDWR;
+				else
+					return false;
+			case 2:
+				return true;
+			break;
+		}
+		pos++;
+	}
+	return false;
+}
+
+struct arcan_strarr arcan_user_namespaces()
+{
+	struct arcan_strarr list =
+		arcan_db_applkeys(arcan_db_get_shared(NULL), "arcan", "ns_%");
+
+	if (!list.data)
+		return list;
+
+	struct arcan_strarr res = {0};
+
+	char** curr = res.data;
+	while (curr && *curr){
+		struct arcan_userns ns;
+		if (!decompose(*curr++, &ns))
+			continue;
+
+		if (res.count == res.limit){
+			arcan_mem_growarr(&res);
+			if (res.count == res.limit)
+				goto out;
+		}
+
+		struct arcan_userns* newns = malloc(sizeof(newns));
+		if (newns){
+			*newns = ns;
+			res.cdata[res.count++] = newns;
+		}
+	}
+
+out:
+	arcan_mem_freearr(&list);
+	return res;
+}
+
+bool arcan_lookup_namespace(const char* id, struct arcan_userns* dst, bool dfd)
+{
+	size_t len = strlen(id) + sizeof("ns_");
+	char* buf = malloc(len);
+	snprintf(buf, len, "ns_%s", id);
+
+	struct arcan_strarr res = arcan_db_applkeys(arcan_db_get_shared(NULL), "arcan", buf);
+
+/* for each entry, check validity (rw: w: r: id :label:path */
+
+	arcan_mem_freearr(&res);
+	return false;
 }
 

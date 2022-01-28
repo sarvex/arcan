@@ -13,6 +13,10 @@
 -- dynamic namespace tag. Valid constants for domain (can be ORed) are APPL_RESOURCE,
 -- APPL_TEMP_RESOURCE, SHARED_RESOURCE, SYS_APPL_RESOURCE, SYS_FONT_RESOURCE,
 -- APPL_STATE_RESOURCE,
+-- @note: The reserved pattern ":namespaces" will ignore any domain or
+-- namespace argument and return a list of all valid user namespaces. This
+-- will come in the form of a namespace identifier and a label separated with
+-- a colon, like "myns:My Home".
 -- @note: the default domain is the compile-time defined (DEFAULT_USERMASK)
 -- which is comprised of (application- specific, application shared,
 -- application temporary)

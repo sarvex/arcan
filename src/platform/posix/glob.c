@@ -17,8 +17,9 @@
 #include <arcan_math.h>
 #include <arcan_general.h>
 
-unsigned arcan_glob(char* basename, enum arcan_namespaces space,
-	void (*cb)(char*, void*), void* tag)
+unsigned arcan_glob(
+	char* basename,
+	enum arcan_namespaces space, void (*cb)(char*, void*), void* tag)
 {
 	unsigned count = 0;
 

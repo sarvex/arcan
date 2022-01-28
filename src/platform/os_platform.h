@@ -139,16 +139,21 @@ char* arcan_expand_resource(const char* label, enum arcan_namespaces);
  * ordered by individual enum value (low to high).
  * Returns dynamically allocated string on match, else NULL.
  */
-char* arcan_find_resource(const char* label,
-	enum arcan_namespaces, enum resource_type);
+char* arcan_find_resource(
+	const char* label, enum arcan_namespaces, enum resource_type);
 
 /*
  * implemented in <platform>/namespace.c
- * concatenate <path> and <label>, then forward to arcan_find_resource
- * return dynamically allocated string on match, else NULL.
+ * return a list of valid user namespace identifiers.
  */
-char* arcan_find_resource_path(
-	const char* label, const char* path, enum arcan_namespaces);
+struct arcan_strarr arcan_user_namespaces();
+
+/*
+ * get the details from a user namespace,
+ * and return if it was found or not. If openfd is set to
+ * true, it will also retrieve a dirfd to the namespace root.
+ */
+bool arcan_lookup_namespace(const char* id, struct arcan_userns*, bool openfd);
 
 /*
  * implemented in <platform>/strip_traverse.c

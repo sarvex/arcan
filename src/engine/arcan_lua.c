@@ -5794,7 +5794,7 @@ static int push_stringres(lua_State* ctx, struct arcan_strarr* res)
 
 	if (res->data){
 		char** curr = res->data;
-		unsigned int count = 1; /* 1 indexing, seriously LUA ... */
+		unsigned int count = 1;
 
 		curr = res->data;
 
@@ -6999,13 +6999,61 @@ static int globresource(lua_State* ctx)
 	char* label = (char*) luaL_checkstring(ctx, 1);
 	int mask = DEFAULT_USERMASK;
 
+/* special case, just get list of namespaces and query each one for its
+ * properties, push as table of tables */
+	if (strcmp(label, ":namespaces") == 0){
+		struct arcan_strarr ns = arcan_user_namespaces();
+		lua_newtable(ctx);
+		char** curr = ns.data;
+		int count = 1;
+		while (curr && *curr){
+			struct arcan_userns ns;
+			if (arcan_lookup_namespace(*curr, &ns, false)){
+				lua_pushnumber(ctx, count++);
+				lua_newtable(ctx);
+
+				lua_pushliteral(ctx, "label");
+				lua_pushstring(ctx, ns.label);
+				lua_rawset(ctx, -1);
+
+				lua_pushliteral(ctx, "name");
+				lua_pushstring(ctx, *curr);
+				lua_rawset(ctx, -1);
+
+				lua_pushliteral(ctx, "read");
+				lua_pushboolean(ctx, ns.perm == O_RDWR || ns.perm == O_RDONLY);
+				lua_rawset(ctx, -1);
+
+				lua_pushliteral(ctx, "write");
+				lua_pushboolean(ctx, ns.perm == O_RDWR || ns.perm == O_WRONLY);
+				lua_rawset(ctx, -1);
+				lua_rawset(ctx, -1);
+			}
+			*curr++;
+		}
+		arcan_mem_freearr(&ns);
+		LUA_ETRACE("glob_resource", NULL, 1);
+	}
+
 	if (lua_type(ctx, 2) == LUA_TSTRING){
-/* placeholder to permit a db lookup of namespaces */
+/* set the user namespace based on tag */
+		struct arcan_userns ns;
+		if (!arcan_lookup_namespace(lua_tostring(ctx, 2), &ns, false)){
+			lua_pushboolean(ctx, false);
+			LUA_ETRACE("glob_resource", NULL, 1);
+		}
+
+		mask = RESOURCE_NS_USER;
 	}
 	else if (lua_type(ctx, 2) == LUA_TNUMBER){
 		mask = luaL_checknumber(ctx, 2);
-		mask &= (DEFAULT_USERMASK |
-			RESOURCE_APPL_STATE | RESOURCE_SYS_APPLBASE | RESOURCE_SYS_FONT);
+		mask &=
+			(
+				DEFAULT_USERMASK
+				|RESOURCE_APPL_STATE
+				|RESOURCE_SYS_APPLBASE
+				|RESOURCE_SYS_FONT
+			);
 	}
 
 	lua_newtable(ctx);
