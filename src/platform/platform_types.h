@@ -317,7 +317,10 @@ typedef struct {
 
 enum resource_type {
 	ARES_FILE = 1,
-	ARES_FOLDER = 2
+	ARES_FOLDER = 2,
+	ARES_SOCKET = 3,
+	ARES_CREATE = 256,
+	ARES_RDONLY = 512
 };
 
 /*
@@ -410,7 +413,9 @@ enum arcan_namespaces {
 };
 
 struct arcan_userns {
-	mode_t perm;
+	bool read;
+	bool write;
+	bool ipc;
 	int dirfd;
 	char label[64];
 	char name[32];

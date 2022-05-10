@@ -61,6 +61,7 @@ static const char* lbls[] = {
 	"system-debugoutput",
 	"system-scripts"
 };
+bool arcan_lookup_namespace(const char* id, struct arcan_userns* dst, bool dfd);
 
 static unsigned i_log2(uint32_t n)
 {
@@ -69,11 +70,82 @@ static unsigned i_log2(uint32_t n)
 	return res;
 }
 
-char* arcan_find_resource(const char* label,
-	enum arcan_namespaces space, enum resource_type ares)
+static char* find_ns_user(const char* str, struct arcan_userns* dns)
 {
+	size_t i = 0;
+	bool found = false;
+
+	for (;str[i] && isalnum(str[i]); i++);
+	if (str[i] != ':' || str[i+1] == '/'){
+		return NULL;
+	}
+
+	struct arcan_userns ns = {0};
+	snprintf(ns.name, sizeof(ns.name), "%.%s", i, str);
+	if (!arcan_lookup_namespace(ns.name, &ns, false))
+		return NULL;
+
+	size_t path_sz = strlen(&str[i+2]) + sizeof("/") + strlen(ns.path);
+	char* res = malloc(path_sz);
+
+	if (!res)
+		return NULL;
+
+	if (dns)
+		*dns = ns;
+
+	snprintf(res, path_sz, "%s/%s", ns.path, &str[i+2]);
+	return res;
+}
+
+static char* handle_dynfile(char* base, enum resource_type ares, int* dfd)
+{
+/* exist but it shouldn't */
+	if (ares & ARES_CREATE){
+		free(base);
+		return NULL;
+	}
+
+/* only want to resolve */
+	if (!dfd)
+		return base;
+
+	if (ares & ARES_CREATE){
+		*dfd = open(base, O_CREAT | O_RDWR, S_IRWXU);
+	}
+	else {
+		*dfd = open(base, (ares & ARES_RDONLY) ? O_RDONLY : O_RDWR);
+	}
+
+	if (-1 == *dfd){
+		free(base);
+		return NULL;
+	}
+
+	return base;
+}
+
+char* arcan_find_resource(const char* label,
+	enum arcan_namespaces space, enum resource_type ares, int* dfd)
+{
+	if (dfd)
+		*dfd = -1;
+
 	if (label == NULL || verify_traverse(label) == NULL)
 		return NULL;
+
+/* user-ns aware applications shouldn't really need this but in order
+ * to not miss compat. well it is better to at least provide something */
+	if (ares & RESOURCE_NS_USER){
+		char* res = find_ns_user(label, NULL);
+		if (res){
+			if ((ares & ARES_FILE) && arcan_isfile(res))
+				return handle_dynfile(res, ares, dfd);
+			if ((ares & ARES_FOLDER) && arcan_isdir(res))
+				return handle_dynfile(res, ares, dfd);
+			free(res);
+		}
+	}
 
 	space &= ~RESOURCE_NS_USER;
 	size_t label_len = strlen(label);
@@ -91,8 +163,9 @@ char* arcan_find_resource(const char* label,
 		if (
 			((ares & ARES_FILE) && arcan_isfile(scratch)) ||
 			((ares & ARES_FOLDER) && arcan_isdir(scratch))
-		)
-			return strdup(scratch);
+		){
+			return handle_dynfile(strdup(scratch), ares, dfd);
+		}
 	}
 
 	return NULL;
@@ -111,9 +184,13 @@ char* arcan_fetch_namespace(enum arcan_namespaces space)
 char* arcan_expand_resource(const char* label, enum arcan_namespaces space)
 {
 	assert( space > 0 && (space & (space - 1) ) == 0 );
+	if (space & RESOURCE_NS_USER){
+		return find_ns_user(label, NULL);
+	}
+
 	space &= ~RESOURCE_NS_USER;
 
-	int space_ind =i_log2(space);
+	int space_ind = i_log2(space);
 	if (space_ind > sizeof(namespaces.paths)/sizeof(namespaces.paths[0]) ||
 		label == NULL || verify_traverse(label) == NULL ||
 		!namespaces.paths[space_ind]
@@ -222,6 +299,7 @@ bool arcan_verify_namespaces(bool report)
 
 void arcan_softoverride_namespace(const char* new, enum arcan_namespaces space)
 {
+	space &= ~RESOURCE_NS_USER;
 	char* tmp = arcan_expand_resource("", space);
 	if (!tmp)
 		arcan_override_namespace(new, space);
@@ -256,65 +334,85 @@ void arcan_override_namespace(const char* path, enum arcan_namespaces space)
 	namespaces.lenv[space_ind] = strlen(namespaces.paths[space_ind]);
 }
 
-/* take a properly formatted namespace string (label:perm:path)
+/* take a properly formatted namespace string (ns_key=label:perm:path)
  * and split up into the arcan_userns structure */
 static bool decompose(char* ns, struct arcan_userns* dst)
 {
+	*dst = (struct arcan_userns){0};
 	char* tmp = ns;
 	size_t pos = 0;
+
+/* ns_key= comes hard coded from the arcan_db lookup and without it we
+ * won't be here so it is safe to assume it exists */
+	while (*tmp != '=')
+		tmp++;
+	*tmp++ = '\0';
+	snprintf(dst->name, COUNT_OF(dst->name), "%s", ns);
+
 	while (tmp){
 		char* cur = strsep(&tmp, ":");
 		switch(pos){
-			case 0: snprintf(dst->label, 64, "%s", cur); break;
+			case 0:
+				snprintf(dst->label, 64, "%s", cur); break;
 			case 1:
-				if (strcmp(cur, "r") == 0)
-					dst->perm = O_RDONLY;
-				else if (strcmp(cur, "w") == 0)
-					dst->perm = O_WRONLY;
-				else if (strcmp(cur, "rw") == 0)
-					dst->perm = O_RDWR;
-				else
-					return false;
+				if (strchr(cur, 'r'))
+					dst->read = true;
+				if (strchr(cur, 'w'))
+					dst->write = true;
+				if (strchr(cur, 'p'))
+					dst->ipc = true;
+			break;
 			case 2:
+				snprintf(dst->path, COUNT_OF(dst->path), "%s", cur);
 				return true;
 			break;
 		}
 		pos++;
 	}
+
 	return false;
 }
 
 struct arcan_strarr arcan_user_namespaces()
 {
-	struct arcan_strarr list =
+	struct arcan_strarr res = {0};
+	struct arcan_strarr ids =
 		arcan_db_applkeys(arcan_db_get_shared(NULL), "arcan", "ns_%");
 
-	if (!list.data)
-		return list;
+	if (!ids.count){
+		arcan_mem_freearr(&ids);
+		return res;
+	}
 
-	struct arcan_strarr res = {0};
-
-	char** curr = res.data;
-	while (curr && *curr){
-		struct arcan_userns ns;
-		if (!decompose(*curr++, &ns))
-			continue;
-
+	int iind = 0;
+	while (ids.data[iind]){
+/* make sure that we fit or cancel out */
 		if (res.count == res.limit){
 			arcan_mem_growarr(&res);
 			if (res.count == res.limit)
-				goto out;
+				break;
 		}
 
-		struct arcan_userns* newns = malloc(sizeof(newns));
-		if (newns){
-			*newns = ns;
-			res.cdata[res.count++] = newns;
+/* parse and store in results */
+		struct arcan_userns tmp;
+		if (decompose(ids.data[iind], &tmp)){
+			res.cdata[res.count] =
+				arcan_alloc_mem(
+					sizeof(struct arcan_userns), ARCAN_MEM_EXTSTRUCT,
+					ARCAN_MEM_BZERO | ARCAN_MEM_NONFATAL,
+					ARCAN_MEMALIGN_NATURAL
+				);
+			if (!res.cdata[res.count])
+				break;
+			*(struct arcan_userns*)(res.cdata[res.count]) = tmp;
+			res.count++;
 		}
+		else
+			arcan_warning("bad user-namespace format: %s (label:perm:path)", ids.data[iind]);
+		iind++;
 	}
 
-out:
-	arcan_mem_freearr(&list);
+	arcan_mem_freearr(&ids);
 	return res;
 }
 
@@ -324,11 +422,23 @@ bool arcan_lookup_namespace(const char* id, struct arcan_userns* dst, bool dfd)
 	char* buf = malloc(len);
 	snprintf(buf, len, "ns_%s", id);
 
-	struct arcan_strarr res = arcan_db_applkeys(arcan_db_get_shared(NULL), "arcan", buf);
+	struct arcan_strarr tbl = arcan_db_applkeys(arcan_db_get_shared(NULL), "arcan", buf);
+	free(buf);
+	bool res = false;
 
-/* for each entry, check validity (rw: w: r: id :label:path */
+	if (tbl.count == 1){
+		res = decompose(tbl.data[0], dst);
+	}
 
-	arcan_mem_freearr(&res);
-	return false;
+	if (dfd && dst->path){
+		int dirfd = open(dst->path, O_RDWR, O_DIRECTORY);
+		if (-1 == dirfd){
+			arcan_mem_freearr(&tbl);
+			*dst = (struct arcan_userns){0};
+		}
+	}
+
+	arcan_mem_freearr(&tbl);
+	return res;
 }
 

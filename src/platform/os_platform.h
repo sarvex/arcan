@@ -135,12 +135,23 @@ char* arcan_expand_resource(const char* label, enum arcan_namespaces);
 
 /*
  * implemented in <platform>/namespace.c
+ * resolve <userns> to <lbl> and return path as dynamically allocated string.
+ */
+char* arcan_expand_userns_resource(
+	const char* label, struct arcan_userns* userns);
+
+/*
+ * implemented in <platform>/namespace.c
  * Search <namespaces> after matching <label> (exist and resource_type match)
  * ordered by individual enum value (low to high).
  * Returns dynamically allocated string on match, else NULL.
+ *
+ * If *dfd is provided the resource will also be opened/created.
  */
 char* arcan_find_resource(
-	const char* label, enum arcan_namespaces, enum resource_type);
+	const char* label,
+	enum arcan_namespaces,
+	enum resource_type, int* dfd);
 
 /*
  * implemented in <platform>/namespace.c
@@ -153,7 +164,8 @@ struct arcan_strarr arcan_user_namespaces();
  * and return if it was found or not. If openfd is set to
  * true, it will also retrieve a dirfd to the namespace root.
  */
-bool arcan_lookup_namespace(const char* id, struct arcan_userns*, bool openfd);
+bool arcan_lookup_namespace(
+	const char* id, struct arcan_userns*, bool openfd);
 
 /*
  * implemented in <platform>/strip_traverse.c
@@ -209,8 +221,8 @@ int fmt_open(int flags, mode_t mode, const char* fmt, ...);
  * invoke <cb(relative path, tag)> for each entry found.
  * returns number of times <cb> was invoked.
  */
-unsigned arcan_glob(char* basename, enum arcan_namespaces,
-	void (*cb)(char*, void*), void* tag);
+unsigned arcan_glob(char* basename,
+	enum arcan_namespaces, void (*cb)(char*, void*), void* tag);
 
 /* replace the thread_local logging output destination with outf.
  * This can be null (and by default is null) in order to disable log output */
